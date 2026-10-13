@@ -62,6 +62,10 @@ pip install -r requirements.txt
 python3 main.py
 ```
 
+<p align="center">
+<img width="1099" height="799" alt="gifteando" src="https://github.com/user-attachments/assets/040d2227-3cc0-461c-9ed4-1495cf5a6a52" />
+</p>
+
 Escribe al menos dos letras y espera un momento: la búsqueda se lanza sola. También puedes pulsar **Buscar** o elegir **Archivo → Buscar**. El portal inicial es **Sin clave**: Openverse, GifCities y Wikimedia Commons.
 
 Al abrir un GIF:
