@@ -16,6 +16,7 @@ Está hecha con Python y [Flet](https://flet.dev/). Busca primero en portales co
 - Filtro **Solo licencia libre** (CC0, dominio público, CC BY y CC BY-SA).
 - Carga más resultados de la misma búsqueda.
 - Permite elegir el portal: sin clave, todos, uno concreto, favoritos o recientes.
+- Icono en la bandeja del sistema: mostrar, buscar, favoritos, recientes, claves, ocultar y salir.
 
 ## Portales
 
@@ -39,12 +40,13 @@ Cada portal se consulta en `gifteando/providers.py` y se normaliza al mismo dato
 
 - Python 3.11 o posterior
 - En Linux, [Zenity](https://help.gnome.org/users/zenity/stable/) para el diálogo de guardar archivos
-
-En Ubuntu o Debian:
+- En Linux, soporte de bandeja (AppIndicator). En Ubuntu o Debian:
 
 ```bash
-sudo apt install zenity
+sudo apt install zenity gir1.2-ayatanaappindicator3-0.1
 ```
+
+Si el menú de la bandeja no aparece, instala también el paquete de AppIndicator de tu escritorio.
 
 ## Instalación
 
@@ -76,7 +78,9 @@ Las miniaturas se guardan en `~/.cache/gifteando/`. Favoritos, recientes y el fi
 
 ### Menú
 
-- **Archivo:** Buscar, Favoritos, Recientes y Salir.
+- **Archivo:** Buscar, Favoritos, Recientes, Ocultar en la bandeja y Salir.
+
+Al cerrar la ventana (la X), la app sigue en la bandeja. Para salir del todo: **Archivo → Salir** o **Salir** en el menú del icono.
 - **Editar:** Claves API…
 - **Ayuda:** Acerca de Gifteando.
 
@@ -97,6 +101,7 @@ gifteando/app.py        Interfaz
 gifteando/providers.py  Búsqueda en cada portal
 gifteando/thumbs.py     Previsualizaciones reducidas y caché en disco
 gifteando/library.py    Favoritos, recientes y filtro de licencia libre
+gifteando/tray.py       Icono y menú de la bandeja del sistema
 gifteando/config.py     Lectura y guardado de las claves
 gifteando/models.py     Datos comunes de un GIF
 empaquetar.sh           Ejecutable de escritorio con flet pack

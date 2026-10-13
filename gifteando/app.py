@@ -27,6 +27,7 @@ from gifteando.providers import (
     search,
 )
 from gifteando.thumbs import CACHE_DIR, load_thumb, shrink_gif, store_thumb
+from gifteando.tray import SystemTray
 
 LOGO_PATH = Path(__file__).resolve().parent / "img" / "logo.png"
 _logo_for_dialog: bytes | None = None
@@ -768,6 +769,8 @@ async def main(page: ft.Page) -> None:
                             "Al abrir un GIF puedes copiar el enlace, el archivo o la atribución, "
                             "marcarlo favorito y ver la licencia cuando el portal la informa.\n"
                             "Descargarlo no implica que se pueda reutilizar.\n\n"
+                            "Al cerrar la ventana, Gifteando sigue en la bandeja del sistema. "
+                            "Usa Salir en el menú de la bandeja o en Archivo para cerrarlo del todo.\n\n"
                             "Powered by GIPHY cuando se usa ese portal."
                         ),
                         ft.Button("GitHub", icon=ft.Icons.OPEN_IN_NEW, url=PROJECT_URL),
@@ -777,7 +780,32 @@ async def main(page: ft.Page) -> None:
             )
         )
 
-    async def menu_search(_e: ft.Event) -> None:
+    loop = asyncio.get_running_loop()
+    tray_holder: dict[str, SystemTray | None] = {"icon": None}
+    quitting = {"value": False}
+
+    def run_on_ui(action) -> None:
+        if asyncio.iscoroutinefunction(action):
+            loop.call_soon_threadsafe(lambda: page.run_task(action))
+        else:
+            loop.call_soon_threadsafe(action)
+
+    async def show_window(_e: ft.Event | None = None) -> None:
+        page.window.visible = True
+        page.window.minimized = False
+        page.window.skip_task_bar = False
+        page.window.focused = True
+        page.update()
+        await page.window.to_front()
+
+    async def hide_to_tray(_e: ft.Event | None = None) -> None:
+        page.window.visible = False
+        page.window.skip_task_bar = True
+        page.update()
+        set_status("Gifteando sigue en la bandeja del sistema.")
+
+    async def menu_search(_e: ft.Event | None = None) -> None:
+        await show_window()
         if source.value in LIBRARY_VIEWS:
             source.value = "free"
             query.disabled = False
@@ -789,16 +817,38 @@ async def main(page: ft.Page) -> None:
         await query.focus()
         await run_search(False)
 
-    def menu_favorites(_e: ft.Event) -> None:
+    def menu_favorites(_e: ft.Event | None = None) -> None:
+        page.run_task(show_window)
         source.value = "favorites"
         on_source_change(None)
 
-    def menu_recents(_e: ft.Event) -> None:
+    def menu_recents(_e: ft.Event | None = None) -> None:
+        page.run_task(show_window)
         source.value = "recents"
         on_source_change(None)
 
-    async def quit_app(_e: ft.Event) -> None:
-        await page.window.close()
+    def menu_keys(_e: ft.Event | None = None) -> None:
+        page.run_task(show_window)
+        open_keys()
+
+    async def quit_app(_e: ft.Event | None = None) -> None:
+        if quitting["value"]:
+            return
+        quitting["value"] = True
+        tray = tray_holder["icon"]
+        tray_holder["icon"] = None
+        if tray is not None:
+            await asyncio.to_thread(tray.stop)
+        page.window.prevent_close = False
+        page.update()
+        await page.window.destroy()
+
+    async def on_window_event(e: ft.WindowEvent) -> None:
+        if e.type == ft.WindowEventType.CLOSE and not quitting["value"]:
+            await hide_to_tray()
+
+    page.window.prevent_close = True
+    page.window.on_event = on_window_event
 
     page.add(
         ft.MenuBar(
@@ -809,6 +859,7 @@ async def main(page: ft.Page) -> None:
                         ft.MenuItemButton(content="Buscar", on_click=menu_search),
                         ft.MenuItemButton(content="Favoritos", on_click=menu_favorites),
                         ft.MenuItemButton(content="Recientes", on_click=menu_recents),
+                        ft.MenuItemButton(content="Ocultar en la bandeja", on_click=hide_to_tray),
                         ft.MenuItemButton(content="Salir", on_click=quit_app),
                     ],
                 ),
@@ -843,7 +894,23 @@ async def main(page: ft.Page) -> None:
     )
     await page.window.center()
 
+    tray_holder["icon"] = SystemTray(
+        logo_path=LOGO_PATH,
+        on_show=lambda: run_on_ui(show_window),
+        on_search=lambda: run_on_ui(menu_search),
+        on_favorites=lambda: run_on_ui(menu_favorites),
+        on_recents=lambda: run_on_ui(menu_recents),
+        on_keys=lambda: run_on_ui(menu_keys),
+        on_hide=lambda: run_on_ui(hide_to_tray),
+        on_quit=lambda: run_on_ui(quit_app),
+    )
+    tray_holder["icon"].start()
+
     async def close_client() -> None:
+        tray = tray_holder["icon"]
+        tray_holder["icon"] = None
+        if tray is not None:
+            await asyncio.to_thread(tray.stop)
         await client.aclose()
 
     page.on_close = lambda e: page.run_task(close_client)
