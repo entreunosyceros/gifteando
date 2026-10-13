@@ -118,18 +118,13 @@ La cuadrícula usa una copia pequeña del GIF, guardada en la caché local. El a
 
 ## Ejecutable
 
-Con [flet pack](https://flet.dev/docs/publish/using-pyinstaller) se genera un programa que no pide tener Python instalado. Hace falta PyInstaller:
+Con [flet pack](https://flet.dev/docs/publish/using-pyinstaller) se genera un programa que no pide tener Python instalado. El script crea o reutiliza el entorno virtual `.venv` del proyecto (ignora el `flet` roto de `~/.local/bin` si lo hubiera):
 
 ```bash
-pip install pyinstaller
 ./empaquetar.sh
 ```
 
-El resultado queda en `dist/`. El mismo comando sirve en Linux, Windows y macOS; en Windows y macOS puedes lanzarlo a mano:
-
-```bash
-flet pack -n Gifteando -i gifteando/img/logo.png --product-name Gifteando --add-data "gifteando/img:gifteando/img" main.py
-```
+El resultado queda en `dist/`. La primera vez instalará Flet, PyInstaller y el resto de dependencias dentro de `.venv`.
 
 En Linux, guardar un GIF sigue usando Zenity, que no va dentro del ejecutable: hay que tenerlo instalado en el equipo. Un paquete Flatpak puede incluir esa dependencia; el ejecutable de `flet pack` no.
 
