@@ -6,10 +6,14 @@ from pathlib import Path
 from PIL import Image
 
 CACHE_DIR = Path.home() / ".cache" / "gifteando"
+# v2: GIF re-codificados para que Flutter/Skia pueda leer los fotogramas.
+_CACHE_VERSION = "v2"
 
 
 def _thumb_path(url: str, max_side: int, max_frames: int) -> Path:
-    digest = hashlib.sha256(f"{max_side}\n{max_frames}\n{url}".encode()).hexdigest()
+    digest = hashlib.sha256(
+        f"{_CACHE_VERSION}\n{max_side}\n{max_frames}\n{url}".encode()
+    ).hexdigest()
     return CACHE_DIR / digest[:2] / f"{digest}.gif"
 
 
@@ -46,28 +50,51 @@ def store_thumb(url: str, data: bytes, max_side: int = 160, max_frames: int = 8)
         return
 
 
+def _frame_duration(image: Image.Image, step: int) -> int:
+    raw = image.info.get("duration", 100)
+    if isinstance(raw, (list, tuple)):
+        raw = raw[0] if raw else 100
+    try:
+        duration = int(raw)
+    except (TypeError, ValueError):
+        duration = 100
+    return max(40, duration * step)
+
+
+def _prepare_frame(frame: Image.Image, max_side: int) -> Image.Image:
+    """RGB opaco + paleta: Flutter falla a menudo con GIF RGBA de Pillow."""
+    rgba = frame.convert("RGBA")
+    rgba.thumbnail((max_side, max_side), Image.Resampling.BILINEAR)
+    background = Image.new("RGB", rgba.size, (24, 24, 28))
+    background.paste(rgba, mask=rgba.getchannel("A"))
+    return background.convert("P", palette=Image.Palette.ADAPTIVE, colors=256)
+
+
 def shrink_gif(data: bytes, max_side: int = 160, max_frames: int = 8) -> bytes:
     """Devuelve un GIF corto y pequeño para la cuadrícula.
 
     El original puede pesar varios megabytes. Mostrarlo entero en cada
-    tarjeta bloquea el dibujo de la ventana.
+    tarjeta bloquea el dibujo de la ventana. Además se re-codifica en un
+    formato que Flutter puede animar sin errores de fotograma.
     """
-    if len(data) <= 60_000:
+    try:
+        with Image.open(io.BytesIO(data)) as image:
+            frame_count = max(getattr(image, "n_frames", 1) or 1, 1)
+            # GIF ya pequeño y de un solo fotograma: no hace falta tocar.
+            if frame_count == 1 and len(data) <= 60_000:
+                return data
+            step = max(1, frame_count // max_frames)
+            frames: list[Image.Image] = []
+            durations: list[int] = []
+            for index in range(0, frame_count, step):
+                image.seek(index)
+                frames.append(_prepare_frame(image, max_side))
+                durations.append(_frame_duration(image, step))
+                if len(frames) >= max_frames:
+                    break
+    except OSError:
         return data
-    with Image.open(io.BytesIO(data)) as image:
-        frame_count = max(getattr(image, "n_frames", 1) or 1, 1)
-        step = max(1, frame_count // max_frames)
-        frames: list[Image.Image] = []
-        durations: list[int] = []
-        for index in range(0, frame_count, step):
-            image.seek(index)
-            frame = image.convert("RGBA")
-            frame.thumbnail((max_side, max_side), Image.Resampling.BILINEAR)
-            frames.append(frame)
-            duration = int(image.info.get("duration") or 100)
-            durations.append(max(40, duration) * step)
-            if len(frames) >= max_frames:
-                break
+
     if not frames:
         return data
     buffer = io.BytesIO()
@@ -79,18 +106,18 @@ def shrink_gif(data: bytes, max_side: int = 160, max_frames: int = 8) -> bytes:
         duration=durations if len(frames) > 1 else durations[0],
         loop=0,
         disposal=2,
+        optimize=False,
     )
     shrunk = buffer.getvalue()
     if not shrunk.startswith(b"GIF"):
-        return data if len(data) <= 200_000 else _one_frame(frames[0])
+        return _one_frame(frames[0])
     if len(shrunk) > 250_000 and max_side > 96:
         return shrink_gif(data, max_side=max_side // 2, max_frames=max(4, max_frames // 2))
-    if len(shrunk) >= len(data) and len(data) <= 200_000:
-        return data
     return shrunk
 
 
 def _one_frame(frame: Image.Image) -> bytes:
+    prepared = frame if frame.mode == "P" else _prepare_frame(frame, max(frame.size))
     buffer = io.BytesIO()
-    frame.save(buffer, format="GIF")
+    prepared.save(buffer, format="GIF")
     return buffer.getvalue()

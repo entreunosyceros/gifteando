@@ -6,7 +6,18 @@ from pathlib import Path
 import flet as ft
 import httpx
 
-from gifteando.config import ApiKeys, load_keys, save_keys
+from gifteando.config import load_keys, save_keys
+from gifteando.library import (
+    attribution_text,
+    is_favorite,
+    is_freely_reusable,
+    load_favorites,
+    load_free_only,
+    load_recents,
+    remember_recent,
+    save_free_only,
+    toggle_favorite,
+)
 from gifteando.models import GifItem
 from gifteando.providers import (
     MissingKeyError,
@@ -15,7 +26,7 @@ from gifteando.providers import (
     fetch_bytes,
     search,
 )
-from gifteando.thumbs import load_thumb, shrink_gif, store_thumb
+from gifteando.thumbs import CACHE_DIR, load_thumb, shrink_gif, store_thumb
 
 LOGO_PATH = Path(__file__).resolve().parent / "img" / "logo.png"
 _logo_for_dialog: bytes | None = None
@@ -63,6 +74,8 @@ START_CURSORS: dict[str, int | str | None] = {
     "giphy": 0,
     "klipy": None,
 }
+LIBRARY_VIEWS = {"favorites", "recents"}
+CLIPBOARD_DIR = CACHE_DIR / "clipboard"
 
 
 def _filename(item: GifItem) -> str:
@@ -75,12 +88,24 @@ def _filename(item: GifItem) -> str:
 def _placeholder(source: str) -> str:
     if source == "klipy":
         return "Search KLIPY"
+    if source == "favorites":
+        return "Tus GIFs favoritos"
+    if source == "recents":
+        return "GIFs abiertos hace poco"
     return "Busca un GIF animado"
 
 
 def _attribution(source: str) -> str:
+    if source == "favorites":
+        return "Favoritos guardados en este equipo"
+    if source == "recents":
+        return "Recientes de este equipo"
     names = SOURCE_GROUPS.get(source, [])
     return " · ".join(ATTRIBUTION[name] for name in names if name in ATTRIBUTION)
+
+
+def _link_for(item: GifItem) -> str:
+    return item.page_url or item.original_url or item.download_url
 
 
 def _provenance(item: GifItem) -> list[ft.Control]:
@@ -108,6 +133,10 @@ def _provenance(item: GifItem) -> list[ft.Control]:
         notes.append(ft.TextButton("Página de procedencia", url=item.page_url))
     if item.original_url and item.original_url not in {item.download_url, item.page_url}:
         notes.append(ft.TextButton("URL original", url=item.original_url))
+    if is_freely_reusable(item):
+        notes.append(
+            ft.Text("Licencia libre para reutilizar (revisa siempre los términos).", size=12)
+        )
     return notes
 
 
@@ -123,14 +152,21 @@ async def main(page: ft.Page) -> None:
 
     keys = load_keys()
     file_picker = ft.FilePicker()
+    clipboard = ft.Clipboard()
     gif_cache: dict[str, bytes] = {}
     thumb_cache: dict[tuple[str, int, int], bytes] = {}
-    load_gate = asyncio.Semaphore(2)
+    # Una sola descarga a la vez evita el 429 de upload.wikimedia.org.
+    load_gate = asyncio.Semaphore(1)
     ui_lock = asyncio.Lock()
     client = httpx.AsyncClient(
         timeout=60,
         follow_redirects=True,
-        headers={"User-Agent": "Gifteando/1.0 (personal desktop app; GIF preview) python-httpx"},
+        headers={
+            "User-Agent": (
+                "Gifteando/1.0 (https://github.com/entreunosyceros/gifteando; "
+                "desktop GIF search) python-httpx"
+            ),
+        },
     )
 
     query = ft.TextField(
@@ -141,7 +177,7 @@ async def main(page: ft.Page) -> None:
     source = ft.Dropdown(
         label="Portal",
         value="free",
-        width=320,
+        width=300,
         options=[
             ft.DropdownOption(key="free", text="Sin clave"),
             ft.DropdownOption(key="all", text="Todos"),
@@ -150,13 +186,20 @@ async def main(page: ft.Page) -> None:
             ft.DropdownOption(key="wikimedia", text="Wikimedia Commons"),
             ft.DropdownOption(key="giphy", text="Giphy"),
             ft.DropdownOption(key="klipy", text="KLIPY"),
+            ft.DropdownOption(key="favorites", text="Favoritos"),
+            ft.DropdownOption(key="recents", text="Recientes"),
         ],
+    )
+    free_only = ft.Switch(
+        label="Solo licencia libre",
+        value=load_free_only(),
+        tooltip="Muestra CC0, dominio público, CC BY y CC BY-SA. Oculta NC/ND y lo que no informa licencia.",
     )
     search_button = ft.Button("Buscar", icon=ft.Icons.SEARCH, on_click=lambda e: page.run_task(run_search, False))
     attribution = ft.Text(_attribution("free"), size=12, color=ft.Colors.ON_SURFACE_VARIANT)
     status_icon = ft.ProgressRing(width=18, height=18, stroke_width=2, visible=False)
     status_text = ft.Text(
-        "Escribe al menos dos letras: la búsqueda empieza al parar. Openverse, GifCities y Wikimedia Commons no necesitan clave.",
+        "Escribe al menos dos letras: la búsqueda empieza al parar. Abre un GIF para copiarlo o marcarlo favorito.",
         expand=True,
     )
     spinner = ft.Container(
@@ -201,9 +244,15 @@ async def main(page: ft.Page) -> None:
         status_text.value = message
         status_icon.visible = busy
         spinner.visible = busy and not state["items"]
-        search_button.disabled = busy
+        search_button.disabled = busy or (source.value in LIBRARY_VIEWS)
         load_more.disabled = busy
+        free_only.disabled = busy
         page.update()
+
+    def visible_items(items: list[GifItem]) -> list[GifItem]:
+        if not free_only.value:
+            return items
+        return [item for item in items if is_freely_reusable(item)]
 
     def render_items() -> None:
         generation = state["generation"]
@@ -214,10 +263,32 @@ async def main(page: ft.Page) -> None:
             cards.append(card)
             loaders.append(loader)
         grid.controls = cards
-        load_more.visible = bool(state["items"]) and state.get("has_more", False)
+        load_more.visible = (
+            bool(state["items"])
+            and state.get("has_more", False)
+            and state["source"] not in LIBRARY_VIEWS
+        )
         grid.update()
         load_more.update()
         page.run_task(load_previews, loaders, generation)
+
+    def show_library(kind: str) -> None:
+        state["generation"] += 1
+        state["source"] = kind
+        state["query"] = ""
+        state["has_more"] = False
+        state["pending"] = set()
+        items = load_favorites() if kind == "favorites" else load_recents()
+        filtered = visible_items(items)
+        state["items"] = filtered
+        render_items()
+        label = "favoritos" if kind == "favorites" else "recientes"
+        if not items:
+            set_status(f"No hay GIFs en {label} todavía.")
+        elif not filtered:
+            set_status(f"Hay {len(items)} en {label}, pero ninguno pasa el filtro de licencia libre.")
+        else:
+            set_status(f"{len(filtered)} GIFs en {label}.")
 
     async def load_previews(loaders: list, generation: int) -> None:
         queue: asyncio.Queue = asyncio.Queue()
@@ -232,7 +303,7 @@ async def main(page: ft.Page) -> None:
                     return
                 await loader()
 
-        await asyncio.gather(worker(), worker())
+        await worker()
 
     async def thumbnail(url: str, max_side: int = 160, max_frames: int = 8) -> bytes:
         key = (url, max_side, max_frames)
@@ -327,6 +398,13 @@ async def main(page: ft.Page) -> None:
 
     async def open_detail(item: GifItem) -> None:
         detail_status = ft.Text("", size=12)
+        favorite = is_favorite(item)
+        favorite_button = ft.IconButton(
+            icon=ft.Icons.STAR if favorite else ft.Icons.STAR_BORDER,
+            tooltip="Quitar de favoritos" if favorite else "Añadir a favoritos",
+            icon_color=ft.Colors.AMBER if favorite else None,
+        )
+        remember_recent(item)
 
         async def download(_e: ft.Event) -> None:
             detail_status.value = "Descargando…"
@@ -358,6 +436,62 @@ async def main(page: ft.Page) -> None:
             detail_status.value = f"Guardado en {path}"
             detail_status.update()
 
+        async def copy_link(_e: ft.Event) -> None:
+            link = _link_for(item)
+            if not link:
+                detail_status.value = "Este GIF no tiene enlace para copiar."
+                detail_status.update()
+                return
+            await clipboard.set(link)
+            detail_status.value = "Enlace copiado. Pégalo en el chat o el documento."
+            detail_status.update()
+
+        async def copy_gif(_e: ft.Event) -> None:
+            detail_status.value = "Preparando GIF…"
+            detail_status.update()
+            try:
+                data = gif_cache.get(item.download_url) or await cached_gif(item.download_url)
+                CLIPBOARD_DIR.mkdir(parents=True, exist_ok=True)
+                path = CLIPBOARD_DIR / _filename(item)
+                path.write_bytes(data)
+                ok = await clipboard.set_files([str(path)])
+            except ProviderError as exc:
+                detail_status.value = str(exc)
+                detail_status.update()
+                return
+            except httpx.HTTPError:
+                detail_status.value = "No hay conexión para copiar el GIF."
+                detail_status.update()
+                return
+            except Exception as exc:
+                detail_status.value = f"No se pudo copiar el archivo: {exc}"
+                detail_status.update()
+                return
+            detail_status.value = (
+                "GIF copiado como archivo. Pégalo en el chat o el documento."
+                if ok
+                else "El sistema no aceptó el archivo en el portapapeles."
+            )
+            detail_status.update()
+
+        async def copy_credit(_e: ft.Event) -> None:
+            await clipboard.set(attribution_text(item))
+            detail_status.value = "Atribución copiada."
+            detail_status.update()
+
+        def on_favorite(_e: ft.Event) -> None:
+            now = toggle_favorite(item)
+            favorite_button.icon = ft.Icons.STAR if now else ft.Icons.STAR_BORDER
+            favorite_button.tooltip = "Quitar de favoritos" if now else "Añadir a favoritos"
+            favorite_button.icon_color = ft.Colors.AMBER if now else None
+            favorite_button.update()
+            detail_status.value = "Añadido a favoritos." if now else "Quitado de favoritos."
+            detail_status.update()
+            if state["source"] == "favorites":
+                show_library("favorites")
+
+        favorite_button.on_click = on_favorite
+
         page.show_dialog(
             ft.AlertDialog(
                 modal=True,
@@ -378,6 +512,10 @@ async def main(page: ft.Page) -> None:
                     ],
                 ),
                 actions=[
+                    favorite_button,
+                    ft.Button("Copiar enlace", icon=ft.Icons.LINK, on_click=copy_link),
+                    ft.Button("Copiar GIF", icon=ft.Icons.CONTENT_COPY, on_click=copy_gif),
+                    ft.TextButton("Copiar atribución", on_click=copy_credit),
                     ft.Button("Descargar", icon=ft.Icons.DOWNLOAD, on_click=download),
                     ft.TextButton("Cerrar", on_click=lambda e: page.pop_dialog()),
                 ],
@@ -422,6 +560,11 @@ async def main(page: ft.Page) -> None:
                 page.run_task(run_search, False)
 
     async def _run_search(append: bool) -> None:
+        current = source.value or "free"
+        if current in LIBRARY_VIEWS:
+            show_library(current)
+            return
+
         term = (state["query"] if append else (query.value or "")).strip()
         if not term:
             set_status("Escribe un término para buscar.")
@@ -432,12 +575,15 @@ async def main(page: ft.Page) -> None:
         if not append:
             state["items"] = []
             state["query"] = term
-            state["source"] = source.value or "free"
+            state["source"] = current
             state["cursors"] = dict(START_CURSORS)
             state["pending"] = set(SOURCE_GROUPS.get(state["source"], []))
             state["has_more"] = False
             render_items()
         sources = [name for name in SOURCE_GROUPS.get(state["source"], []) if name in state["pending"]]
+        if not sources:
+            set_status("No quedan portales con más resultados.")
+            return
         set_status("Cargando más…" if append else "Buscando…", busy=True)
 
         try:
@@ -468,11 +614,12 @@ async def main(page: ft.Page) -> None:
         if generation != state["generation"]:
             return
 
+        batch = visible_items(result.items)
         if append:
             seen = {(item.source, item.id) for item in state["items"]}
-            state["items"].extend(item for item in result.items if (item.source, item.id) not in seen)
+            state["items"].extend(item for item in batch if (item.source, item.id) not in seen)
         else:
-            state["items"] = list(result.items)
+            state["items"] = list(batch)
         for name in sources:
             if name in result.more:
                 state["cursors"][name] = result.more[name]
@@ -480,16 +627,29 @@ async def main(page: ft.Page) -> None:
                 state["pending"].discard(name)
         state["has_more"] = bool(state["pending"])
         render_items()
+        hidden = len(result.items) - len(batch)
         if not state["items"]:
-            set_status(f"No hay GIFs para «{term}».")
-        elif result.notice:
-            set_status(f"{len(state['items'])} GIFs. {result.notice}")
+            if free_only.value and result.items:
+                set_status(
+                    f"Ningún resultado de «{term}» pasa el filtro de licencia libre. "
+                    "Prueba Openverse/Wikimedia o desactiva el filtro."
+                )
+            else:
+                set_status(f"No hay GIFs para «{term}».")
         else:
-            set_status(f"{len(state['items'])} GIFs.")
+            extra = []
+            if free_only.value and hidden:
+                extra.append(f"ocultos {hidden} sin licencia libre")
+            if result.notice:
+                extra.append(result.notice)
+            suffix = f" {' · '.join(extra)}" if extra else ""
+            set_status(f"{len(state['items'])} GIFs.{suffix}")
 
     async def wait_and_search(token: int) -> None:
         await asyncio.sleep(0.45)
         if token != state["typing"]:
+            return
+        if (source.value or "free") in LIBRARY_VIEWS:
             return
         term = (query.value or "").strip()
         if len(term) < 2:
@@ -513,9 +673,22 @@ async def main(page: ft.Page) -> None:
         current = source.value or "free"
         query.hint_text = _placeholder(current)
         attribution.value = _attribution(current)
+        query.disabled = current in LIBRARY_VIEWS
+        search_button.disabled = current in LIBRARY_VIEWS
         page.update()
+        if current in LIBRARY_VIEWS:
+            show_library(current)
+
+    def on_free_only_change(_e: ft.Event) -> None:
+        save_free_only(bool(free_only.value))
+        current = source.value or "free"
+        if current in LIBRARY_VIEWS:
+            show_library(current)
+        elif state["items"] and state["query"]:
+            page.run_task(run_search, False)
 
     source.on_select = on_source_change
+    free_only.on_change = on_free_only_change
 
     def open_keys(_e: ft.Event | None = None) -> None:
         giphy_field = ft.TextField(
@@ -592,8 +765,9 @@ async def main(page: ft.Page) -> None:
                             "y Wikimedia Commons.\n"
                             "Con clave gratuita: Giphy y KLIPY, para memes y GIF populares. "
                             "Se configuran en Editar, Claves API.\n\n"
-                            "Al abrir un GIF se muestran el autor, la licencia y la página de origen "
-                            "cuando el portal los informa. Descargarlo no implica que se pueda reutilizar.\n\n"
+                            "Al abrir un GIF puedes copiar el enlace, el archivo o la atribución, "
+                            "marcarlo favorito y ver la licencia cuando el portal la informa.\n"
+                            "Descargarlo no implica que se pueda reutilizar.\n\n"
                             "Powered by GIPHY cuando se usa ese portal."
                         ),
                         ft.Button("GitHub", icon=ft.Icons.OPEN_IN_NEW, url=PROJECT_URL),
@@ -604,9 +778,24 @@ async def main(page: ft.Page) -> None:
         )
 
     async def menu_search(_e: ft.Event) -> None:
+        if source.value in LIBRARY_VIEWS:
+            source.value = "free"
+            query.disabled = False
+            search_button.disabled = False
+            query.hint_text = _placeholder("free")
+            attribution.value = _attribution("free")
+            page.update()
         state["typing"] += 1
         await query.focus()
         await run_search(False)
+
+    def menu_favorites(_e: ft.Event) -> None:
+        source.value = "favorites"
+        on_source_change(None)
+
+    def menu_recents(_e: ft.Event) -> None:
+        source.value = "recents"
+        on_source_change(None)
 
     async def quit_app(_e: ft.Event) -> None:
         await page.window.close()
@@ -618,6 +807,8 @@ async def main(page: ft.Page) -> None:
                     content="Archivo",
                     controls=[
                         ft.MenuItemButton(content="Buscar", on_click=menu_search),
+                        ft.MenuItemButton(content="Favoritos", on_click=menu_favorites),
+                        ft.MenuItemButton(content="Recientes", on_click=menu_recents),
                         ft.MenuItemButton(content="Salir", on_click=quit_app),
                     ],
                 ),
@@ -639,7 +830,7 @@ async def main(page: ft.Page) -> None:
         ft.Row(
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
-            controls=[query, source, search_button],
+            controls=[query, source, free_only, search_button],
         ),
         attribution,
         ft.Row(

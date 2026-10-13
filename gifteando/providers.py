@@ -118,7 +118,14 @@ def parse_giphy(payload: dict, offset: int) -> tuple[list[GifItem], int | None, 
             if not isinstance(entry, dict):
                 continue
             images = entry.get("images") if isinstance(entry.get("images"), dict) else {}
-            preview = _first_url(images, "fixed_height", "downsized", "original")
+            preview = _first_url(
+                images,
+                "fixed_height_small",
+                "fixed_height",
+                "downsized_small",
+                "downsized",
+                "original",
+            )
             download = _first_url(images, "original", "downsized", "fixed_height")
             if not preview or not download:
                 continue
@@ -451,6 +458,7 @@ def parse_wikimedia(payload: dict, offset: int) -> tuple[list[GifItem], int | No
         url = _http_url(info.get("url"))
         if not url:
             continue
+        preview = _http_url(info.get("thumburl")) or url
         object_name = _wikimedia_meta(info, "ObjectName")
         title = object_name or _text(page.get("title")).removeprefix("File:").replace("_", " ")
         license_name = _wikimedia_meta(info, "LicenseShortName") or _wikimedia_meta(info, "UsageTerms")
@@ -458,7 +466,7 @@ def parse_wikimedia(payload: dict, offset: int) -> tuple[list[GifItem], int | No
             GifItem(
                 id=_text(page.get("pageid")) or title or url,
                 title=title or "GIF de Wikimedia Commons",
-                preview_url=url,
+                preview_url=preview,
                 download_url=url,
                 source="wikimedia",
                 original_url=url,
@@ -495,6 +503,7 @@ async def search_wikimedia(
             "gsroffset": offset,
             "prop": "imageinfo",
             "iiprop": "url|mime|extmetadata",
+            "iiurlwidth": 320,
             "iiextmetadatalanguage": "es",
             "maxlag": 5,
         },
@@ -604,19 +613,28 @@ async def search(
 
 
 async def fetch_bytes(client: httpx.AsyncClient, url: str) -> bytes:
-    delay = 0.5
+    delay = 1.5
     last_error = "No se ha podido descargar el GIF."
-    for _ in range(3):
+    host = urlsplit(url).netloc.lower()
+    attempts = 6 if "wikimedia.org" in host else 4
+    for _ in range(attempts):
         response = await client.get(url)
         if response.status_code in (429, 503):
             last_error = "El portal ha limitado las descargas. Espera un poco e inténtalo de nuevo."
-            await asyncio.sleep(delay)
-            delay *= 2
+            retry_after = response.headers.get("retry-after")
+            try:
+                wait = max(delay, float(retry_after)) if retry_after else delay
+            except ValueError:
+                wait = delay
+            await asyncio.sleep(wait)
+            delay = min(delay * 2, 12.0)
             continue
         if response.status_code >= 400:
             raise ProviderError("No se ha podido descargar el GIF.")
         data = response.content
         if data[:6] in (b"GIF87a", b"GIF89a"):
+            if "wikimedia.org" in host:
+                await asyncio.sleep(0.35)
             return data
         last_error = "El archivo recibido no es un GIF."
         break

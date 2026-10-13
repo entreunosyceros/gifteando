@@ -7,9 +7,11 @@ Está hecha con Python y [Flet](https://flet.dev/). Busca primero en portales co
 ## Qué hace
 
 - Busca GIFs animados al dejar de escribir, o con el botón Buscar, y los muestra en una cuadrícula.
-- Abre un GIF a mayor tamaño y lo guarda con el diálogo del sistema.
+- Abre un GIF a mayor tamaño: copiar enlace, copiar el archivo al portapapeles, copiar la atribución, marcarlo favorito o guardarlo.
+- Guarda favoritos y recientes en este equipo (fuera del repositorio).
+- Filtro **Solo licencia libre** (CC0, dominio público, CC BY y CC BY-SA).
 - Carga más resultados de la misma búsqueda.
-- Permite elegir el portal: sin clave, todos, o uno concreto.
+- Permite elegir el portal: sin clave, todos, uno concreto, favoritos o recientes.
 
 ## Portales
 
@@ -56,13 +58,21 @@ python3 main.py
 
 Escribe al menos dos letras y espera un momento: la búsqueda se lanza sola. También puedes pulsar **Buscar** o elegir **Archivo → Buscar**. El portal inicial es **Sin clave**: Openverse, GifCities y Wikimedia Commons.
 
+Al abrir un GIF:
+- **Copiar enlace** pega la URL en el chat o el documento.
+- **Copiar GIF** deja el archivo en el portapapeles del escritorio (pegar en apps que acepten archivos).
+- **Copiar atribución** prepara título, autor, licencia y enlace.
+- La estrella lo guarda en **Favoritos**. Los GIFs abiertos pasan a **Recientes**.
+
+Activa **Solo licencia libre** para ocultar resultados sin licencia clara o con restricciones NC/ND. Encaja sobre todo con Openverse y Wikimedia Commons.
+
 Mientras llegan los resultados se muestra un indicador de carga. Si un portal no responde o supera su límite por hora, el aviso aparece en la barra de estado y los demás portales siguen mostrando lo que hayan encontrado.
 
-Las miniaturas se guardan en `~/.cache/gifteando/`. La segunda vez que abres el mismo GIF no se vuelve a descargar.
+Las miniaturas se guardan en `~/.cache/gifteando/`. Favoritos, recientes y el filtro libre viven en `~/.config/gifteando/library.json`, junto a las claves en `config.json`. Nada de eso forma parte del repositorio.
 
 ### Menú
 
-- **Archivo:** Buscar y Salir.
+- **Archivo:** Buscar, Favoritos, Recientes y Salir.
 - **Editar:** Claves API…
 - **Ayuda:** Acerca de Gifteando.
 
@@ -82,6 +92,7 @@ main.py                 Arranque de la ventana
 gifteando/app.py        Interfaz
 gifteando/providers.py  Búsqueda en cada portal
 gifteando/thumbs.py     Previsualizaciones reducidas y caché en disco
+gifteando/library.py    Favoritos, recientes y filtro de licencia libre
 gifteando/config.py     Lectura y guardado de las claves
 gifteando/models.py     Datos comunes de un GIF
 empaquetar.sh           Ejecutable de escritorio con flet pack
