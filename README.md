@@ -1,5 +1,9 @@
 # Gifteando
 
+<p align="center">
+<img width="1027" height="972" alt="logo" src="https://github.com/user-attachments/assets/493de94e-ead1-449e-9703-6dbe6ebf5503" />
+</p>
+
 Aplicación de escritorio para buscar GIFs animados gratuitos, verlos y guardarlos en el equipo.
 
 Está hecha con Python y [Flet](https://flet.dev/). Busca primero en portales con licencia y atribución, y puede ampliar el catálogo con Giphy y KLIPY si configuras una clave.
